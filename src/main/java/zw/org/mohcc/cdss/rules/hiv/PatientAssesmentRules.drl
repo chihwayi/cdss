@@ -1,0 +1,188 @@
+package zw.org.mohcc.cdss.rules.hiv;
+
+import java.time.LocalDate;
+import java.time.Period;
+import java.util.List;
+import java.util.Map;
+import java.util.HashMap;
+import java.time.format.DateTimeFormatter;
+
+// Helper method to calculate years difference
+function int getYearsDifference(String dateStr) {
+    DateTimeFormatter formatter = DateTimeFormatter.ofPattern("yyyy-MM-dd");
+    LocalDate date = LocalDate.parse(dateStr, formatter);
+    return Period.between(date, LocalDate.now()).getYears();
+}
+
+// Helper method to calculate months difference
+function int getMonthsDifference(String dateStr) {
+    DateTimeFormatter formatter = DateTimeFormatter.ofPattern("yyyy-MM-dd");
+    LocalDate date = LocalDate.parse(dateStr, formatter);
+    return (int) Period.between(date, LocalDate.now()).toTotalMonths();
+}
+
+// Rule for identifying Advanced HIV Disease (AHD) in adults
+rule "Identify AHD in Adults"
+    when
+        $patient: Map()
+        $visits: List() from $patient.get("visits")
+        $lastVisit: Map() from $visits.get(0)
+        $investigations: List() from $lastVisit.get("investigations")
+        $cd4Test: Map(
+            $result: get("result"),
+            get("investigationType") == "CD4_COUNT"
+        ) from $investigations
+        $birthDate: String() from $patient.get("birthDate")
+        eval(getYearsDifference($birthDate) >= 15)
+        eval(Double.valueOf($result) < 200)
+    then
+        Map<String, Object> alert = new HashMap<>();
+        alert.put("type", "AHD_ALERT");
+        alert.put("severity", "HIGH");
+        alert.put("message", "Patient has Advanced HIV Disease (CD4 < 200). Initiate AHD package of care.");
+        insert(alert);
+end
+
+// Rule for pediatric AHD
+rule "Identify AHD in Children"
+    when
+        $patient: Map()
+        $visits: List() from $patient.get("visits")
+        $lastVisit: Map() from $visits.get(0)
+        $investigations: List() from $lastVisit.get("investigations")
+        $cd4Test: Map(
+            $result: get("result"),
+            get("investigationType") == "CD4_COUNT"
+        ) from $investigations
+        $birthDate: String() from $patient.get("birthDate")
+        eval(getYearsDifference($birthDate) < 15)
+        eval(Double.valueOf($result) < 100)
+    then
+        Map<String, Object> alert = new HashMap<>();
+        alert.put("type", "PEDIATRIC_AHD_ALERT");
+        alert.put("severity", "HIGH");
+        alert.put("message", "Pediatric patient has Advanced HIV Disease (CD4 < 100). Urgent intervention required.");
+        insert(alert);
+end
+
+// Rule for viral load monitoring
+rule "High Viral Load Alert"
+    when
+        $patient: Map()
+        $visits: List() from $patient.get("visits")
+        $lastVisit: Map() from $visits.get(0)
+        $vlTests: List() from $lastVisit.get("investigations")
+        $vlTest: Map(
+            $result: get("result"),
+            get("investigationType") == "VIRAL_LOAD"
+        ) from $vlTests
+        eval(Double.valueOf($result) > 1000)
+    then
+        Map<String, Object> alert = new HashMap<>();
+        alert.put("type", "HIGH_VIRAL_LOAD");
+        alert.put("severity", "MEDIUM");
+        alert.put("message", "Viral load > 1000 copies/mL. Consider treatment adherence assessment and potential regimen change.");
+        insert(alert);
+end
+
+// Rule for missed appointments
+rule "Missed Appointment Alert"
+    when
+        $patient: Map()
+        $visits: List() from $patient.get("visits")
+        $lastVisit: Map(
+            $lastDate: get("date")
+        ) from $visits.get(0)
+        eval(getMonthsDifference($lastDate) >= 3)
+    then
+        Map<String, Object> alert = new HashMap<>();
+        alert.put("type", "MISSED_APPOINTMENT");
+        alert.put("severity", "HIGH");
+        alert.put("message", "Patient has not visited for 3+ months. Initiate tracking procedure.");
+        insert(alert);
+end
+
+// Rule for regimen change consideration
+rule "First Line Treatment Failure"
+    when
+        $patient: Map()
+        $visits: List() from $patient.get("visits")
+        $lastVisit: Map() from $visits.get(0)
+        $vlTests: List() from $lastVisit.get("investigations")
+        $vlTest: Map($result: get("result"), get("investigationType") == "VIRAL_LOAD") from $vlTests
+        eval($lastVisit.get("regimenLineName") != null && $lastVisit.get("regimenLineName") == "FIRST_LINE")
+        eval(Double.valueOf($result) > 1000)
+        Number($count: intValue >= 2) from accumulate(
+            $previousVl: Map(
+                $prevResult: get("result")
+            ) from $vlTests,
+            init(int count = 0;),
+            action(if (Double.valueOf($prevResult) > 1000) count++;),
+            result(count)
+        )
+    then
+        Map<String, Object> alert = new HashMap<>();
+        alert.put("type", "REGIMEN_CHANGE_NEEDED");
+        alert.put("severity", "HIGH");
+        alert.put("message", "Consider second-line treatment. Multiple viral load results > 1000 copies/mL on first-line therapy.");
+        insert(alert);
+end
+
+// Rule for CD4 monitoring frequency
+rule "CD4 Monitoring Required"
+    when
+        $patient: Map()
+        $visits: List() from $patient.get("visits")
+        $lastVisit: Map() from $visits.get(0)
+        $investigations: List() from $lastVisit.get("investigations")
+        $cd4Test: Map(
+            $date: get("date")
+        ) from $investigations
+        eval($cd4Test.get("investigationType") == "CD4_COUNT")
+        eval(getMonthsDifference($date) >= 6)
+    then
+        Map<String, Object> alert = new HashMap<>();
+        alert.put("type", "CD4_MONITORING");
+        alert.put("severity", "MEDIUM");
+        alert.put("message", "CD4 count monitoring is due (>6 months since last test).");
+        insert(alert);
+end
+
+// Rule for pediatric dosage adjustment
+rule "Pediatric Dosage Review"
+    when
+        $patient: Map()
+        $birthDate: String() from $patient.get("birthDate")
+        eval(getYearsDifference($birthDate) < 15)
+        $visits: List() from $patient.get("visits")
+        $lastVisit: Map(
+            $lastDate: get("date")
+        ) from $visits.get(0)
+        eval(getMonthsDifference($lastDate) >= 6)
+    then
+        Map<String, Object> alert = new HashMap<>();
+        alert.put("type", "PEDIATRIC_DOSAGE_REVIEW");
+        alert.put("severity", "MEDIUM");
+        alert.put("message", "Review pediatric dosage due to potential weight/age changes.");
+        insert(alert);
+end
+
+// Rule for Opportunistic Infection screening
+rule "OI Screening Required"
+    when
+        $patient: Map()
+        $visits: List() from $patient.get("visits")
+        $lastVisit: Map() from $visits.get(0)
+        $investigations: List() from $lastVisit.get("investigations")
+        $cd4Test: Map(
+            $result: get("result"),
+            get("investigationType") == "CD4_COUNT"
+        ) from $investigations
+        eval(Double.valueOf($result) < 200)
+    then
+        Map<String, Object> alert = new HashMap<>();
+        alert.put("type", "OI_SCREENING");
+        alert.put("severity", "HIGH");
+        alert.put("message", "Low CD4 count requires opportunistic infection screening and prophylaxis evaluation.");
+        insert(alert);
+end
