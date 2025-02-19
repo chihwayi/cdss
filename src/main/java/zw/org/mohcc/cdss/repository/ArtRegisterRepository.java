@@ -11,13 +11,17 @@ import java.util.List;
 public interface ArtRegisterRepository extends JpaRepository<ArtRegister, String> {
 
     @Query("SELECT ar.artId, ar.siteId, ar.artNumber, ar.birthDate, ar.dateEnrolled, ar.dateOfHivTest, ar.personId, ar.sex, " +
-            "acr.artStatusId, acr.adverseEventStatus, acr.date, acr.reason, acr.reasonForRegimenSubstitution, acr.regimen, acr.regimenFrom, acr.regimenLineFromName, acr.regimenLineName, acr.state, acr.treatmentFailureReason, " +
+            "acr.artStatusId, acr.adverseEventStatus, acr.date, acr.reason, acr.reasonForRegimenSubstitution, acr.regimen, " +
+            "acr.regimenFrom, acr.regimenLineFromName, acr.regimenLineName, acr.state, acr.treatmentFailureReason, " +
             "vli.laboratoryInvestigationId, vli.date, vli.note, vli.result, vli.resultDate, vli.resultIssued, vli.test, " +
-            "ir.laboratoryInvestigationId, ir.date, ir.dateResultIssued, ir.investigationType, ir.note, ir.result, ir.resultDate, ir.resultIssued " +
+            "ir.laboratoryInvestigationId, ir.date, ir.dateResultIssued, ir.investigationType, ir.note, ir.result, " +
+            "ir.resultDate, ir.resultIssued, " +
+            "who.artStageId, who.date, who.stage, who.followUpStatus "+
             "FROM ArtRegister ar " +
             "LEFT JOIN ArtCurrentStatusRegister acr ON acr.artRegister.artId = ar.artId " +
             "LEFT JOIN ViralLoadInvestigationRegister vli ON vli.personId = ar.personId " +
             "LEFT JOIN InvestigationRegister ir ON ir.personId = ar.personId " +
+            "LEFT JOIN ArtWhoStageRegister who ON who.artRegister.artId = ar.artId "+
             "WHERE ar.personId = :personId " +
             "ORDER BY acr.date, vli.date, ir.date")
     List<Object[]> findArtRegisterByPersonId(String personId);

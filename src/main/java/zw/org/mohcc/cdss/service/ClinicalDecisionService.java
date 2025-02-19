@@ -84,6 +84,10 @@ public class ClinicalDecisionService {
             Set<String> processedInvestigationIds = new HashSet<>();
             List<Map<String, Object>> investigations = new ArrayList<>();
 
+            // Use Set to track unique whoStatus IDs
+            Set<String> processedWhoStagesIds = new HashSet<>();
+            List<Map<String, Object>> whoStages = new ArrayList<>();
+
             // Process all rows for this date
             for (Object[] row : dateRows) {
                 // Investigation Register
@@ -105,9 +109,27 @@ public class ClinicalDecisionService {
                     processedInvestigationIds.add(irId);
                 }
             }
+            for (Object[] row : dateRows) {
+                // WHO Status Register
+                Date whoDate = (Date) row[35];
+                String whoId = row[34] != null ? row[34].toString() : null;
 
-            // Add investigations to status entry
+                if (row[35] != null && isSameDay(whoDate, statusDate) &&
+                        whoId != null && !processedWhoStagesIds.contains(whoId)){
+
+                    Map<String, Object> whoStage = new HashMap<>();
+                    whoStage.put("artStageId", row[34]);
+                    whoStage.put("date", row[35]);
+                    whoStage.put("whoStage", row[36]);
+                    whoStage.put("followUpStatus", row[37]);
+                    whoStages.add(whoStage);
+                    processedWhoStagesIds.add(whoId);
+                }
+            }
+
+            // Add investigations and who stage to status entry
             statusEntry.put("investigations", investigations);
+            statusEntry.put("whoStages", whoStages);
             statusEntries.add(statusEntry);
         }
 
