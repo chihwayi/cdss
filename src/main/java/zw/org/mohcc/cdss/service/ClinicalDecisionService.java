@@ -1,12 +1,8 @@
 package zw.org.mohcc.cdss.service;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.databind.SerializationFeature;
-import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import lombok.extern.slf4j.Slf4j;
 import org.kie.api.runtime.KieContainer;
 import org.kie.api.runtime.KieSession;
-import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import zw.org.mohcc.cdss.model.dto.ClinicalAlert;
@@ -41,7 +37,7 @@ public class ClinicalDecisionService {
 
         // Basic patient details (assumed unchanged)
         if (!results.isEmpty()) {
-            Object[] firstRow = results.get(0);
+            Object[] firstRow = results.getFirst();
             root.put("artId", firstRow[0]);
             root.put("siteId", firstRow[1]);
             root.put("artNumber", firstRow[2]);
@@ -66,7 +62,7 @@ public class ClinicalDecisionService {
             List<Object[]> dateRows = entry.getValue();
 
             // Create status entry from first row of the group
-            Object[] firstRow = dateRows.get(0);
+            Object[] firstRow = dateRows.getFirst();
             Map<String, Object> statusEntry = new HashMap<>();
             statusEntry.put("artStatusId", firstRow[8]);
             statusEntry.put("adverseEventStatus", firstRow[9]);
@@ -160,29 +156,30 @@ public class ClinicalDecisionService {
         }
 
         // Create KieSession for rules evaluation
-        KieSession kieSession = kieContainer.newKieSession();
+        try (KieSession kieSession = kieContainer.newKieSession()) {
 
-        try {
-            // Insert patient data into session
-            Map<String, Object> patient = patientData.get(0);
-            kieSession.insert(patient);
+            try {
+                // Insert patient data into session
+                Map<String, Object> patient = patientData.getFirst();
+                kieSession.insert(patient);
 
-            // Fire all rules
-            kieSession.fireAllRules();
+                // Fire all rules
+                kieSession.fireAllRules();
 
-            // Collect all alerts from the session
-            List<Map<String, Object>> alerts = new ArrayList<>();
-            for (Object obj : kieSession.getObjects()) {
-                if (obj instanceof Map && ((Map) obj).containsKey("type")) {
-                    alerts.add((Map<String, Object>) obj);
+                // Collect all alerts from the session
+                List<Map<String, Object>> alerts = new ArrayList<>();
+                for (Object obj : kieSession.getObjects()) {
+                    if (obj instanceof Map && ((Map<?, ?>) obj).containsKey("type")) {
+                        alerts.add((Map<String, Object>) obj);
+                    }
                 }
+
+                // Create patient assessment based on the data and alerts
+                return createPatientAssessment(patient, alerts);
+
+            } finally {
+                kieSession.dispose();
             }
-
-            // Create patient assessment based on the data and alerts
-            return createPatientAssessment(patient, alerts);
-
-        } finally {
-            kieSession.dispose();
         }
     }
 
@@ -197,7 +194,7 @@ public class ClinicalDecisionService {
             statuses.sort((s1, s2) -> ((Date) s2.get("date")).compareTo((Date) s1.get("date")));
 
             // Get the most recent status
-            Map<String, Object> latestStatus = statuses.get(0);
+            Map<String, Object> latestStatus = statuses.getFirst();
 
             // Set current status information
             assessment.setState((String) latestStatus.get("state"));
