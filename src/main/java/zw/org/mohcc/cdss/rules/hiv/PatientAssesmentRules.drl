@@ -1,188 +1,127 @@
 package zw.org.mohcc.cdss.rules.hiv;
 
+import zw.org.mohcc.cdss.model.dto.PatientArtData;
+import zw.org.mohcc.cdss.model.dto.ClinicalDecision;
+import zw.org.mohcc.cdss.model.dto.ArtStatus;
+import zw.org.mohcc.cdss.model.dto.WhoStage;
+import zw.org.mohcc.cdss.model.dto.Investigation;
 import java.time.LocalDate;
 import java.time.Period;
+import java.time.temporal.ChronoUnit;
 import java.util.List;
-import java.util.Map;
-import java.util.HashMap;
-import java.time.format.DateTimeFormatter;
 
-// Helper method to calculate years difference
-function int getYearsDifference(String dateStr) {
-    DateTimeFormatter formatter = DateTimeFormatter.ofPattern("yyyy-MM-dd");
-    LocalDate date = LocalDate.parse(dateStr, formatter);
-    return Period.between(date, LocalDate.now()).getYears();
+global java.util.List decisions;
+
+// Helper function to calculate age
+function int calculateAge(LocalDate birthDate) {
+    return Period.between(birthDate, LocalDate.now()).getYears();
 }
 
-// Helper method to calculate months difference
-function int getMonthsDifference(String dateStr) {
-    DateTimeFormatter formatter = DateTimeFormatter.ofPattern("yyyy-MM-dd");
-    LocalDate date = LocalDate.parse(dateStr, formatter);
-    return (int) Period.between(date, LocalDate.now()).toTotalMonths();
-}
-
-// Rule for identifying Advanced HIV Disease (AHD) in adults
-rule "Identify AHD in Adults"
+// Rule for Advanced HIV Disease (AHD) screening
+rule "Advanced HIV Disease Screening"
     when
-        $patient: Map()
-        $visits: List() from $patient.get("visits")
-        $lastVisit: Map() from $visits.get(0)
-        $investigations: List() from $lastVisit.get("investigations")
-        $cd4Test: Map(
-            $result: get("result"),
-            get("investigationType") == "CD4_COUNT"
-        ) from $investigations
-        $birthDate: String() from $patient.get("birthDate")
-        eval(getYearsDifference($birthDate) >= 15)
-        eval(Double.valueOf($result) < 200)
+        $patient: PatientArtData()
+        $status: ArtStatus(state == "START_ARV" || state == "CHANGE") from $patient.statuses
+        $stage: WhoStage(whoStage == "THREE" || whoStage == "FOUR") from $status.whoStages
     then
-        Map<String, Object> alert = new HashMap<>();
-        alert.put("type", "AHD_ALERT");
-        alert.put("severity", "HIGH");
-        alert.put("message", "Patient has Advanced HIV Disease (CD4 < 200). Initiate AHD package of care.");
-        insert(alert);
+        ClinicalDecision decision = new ClinicalDecision();
+        decision.setRecommendationType("AHD_SCREENING");
+        decision.setRecommendation("Initiate AHD package: CD4 count, TB-LAM, CrAg screening required");
+        decision.setUrgency("HIGH");
+        decision.setRationale("WHO Stage " + $stage.getWhoStage() + " indicates possible AHD");
+        decision.setEvaluationDate(LocalDate.now());
+        decisions.add(decision);
 end
 
-// Rule for pediatric AHD
-rule "Identify AHD in Children"
+// Rule for First-line ART regimen
+rule "First-line ART Regimen Recommendation"
     when
-        $patient: Map()
-        $visits: List() from $patient.get("visits")
-        $lastVisit: Map() from $visits.get(0)
-        $investigations: List() from $lastVisit.get("investigations")
-        $cd4Test: Map(
-            $result: get("result"),
-            get("investigationType") == "CD4_COUNT"
-        ) from $investigations
-        $birthDate: String() from $patient.get("birthDate")
-        eval(getYearsDifference($birthDate) < 15)
-        eval(Double.valueOf($result) < 100)
+        $patient: PatientArtData()
+        $status: ArtStatus(state == "START_ARV", regimenLineName == "FIRST_LINE") from $patient.statuses
     then
-        Map<String, Object> alert = new HashMap<>();
-        alert.put("type", "PEDIATRIC_AHD_ALERT");
-        alert.put("severity", "HIGH");
-        alert.put("message", "Pediatric patient has Advanced HIV Disease (CD4 < 100). Urgent intervention required.");
-        insert(alert);
+        ClinicalDecision decision = new ClinicalDecision();
+        decision.setRecommendationType("REGIMEN_RECOMMENDATION");
+        decision.setRecommendation("Recommend TDF + 3TC + DTG as preferred first-line regimen");
+        decision.setUrgency("HIGH");
+        decision.setRationale("WHO 2021 guidelines recommend DTG-based regimens as preferred first-line ART");
+        decision.setEvaluationDate(LocalDate.now());
+        decisions.add(decision);
 end
 
-// Rule for viral load monitoring
-rule "High Viral Load Alert"
+// Rule for Viral Load Monitoring - Fixed version
+rule "Viral Load Monitoring Schedule"
     when
-        $patient: Map()
-        $visits: List() from $patient.get("visits")
-        $lastVisit: Map() from $visits.get(0)
-        $vlTests: List() from $lastVisit.get("investigations")
-        $vlTest: Map(
-            $result: get("result"),
-            get("investigationType") == "VIRAL_LOAD"
-        ) from $vlTests
-        eval(Double.valueOf($result) > 1000)
+        $patient: PatientArtData()
+        $status: ArtStatus(state == "CONTINUE") from $patient.statuses
+        eval(ChronoUnit.MONTHS.between($status.getDate(), LocalDate.now()) >= 6)
     then
-        Map<String, Object> alert = new HashMap<>();
-        alert.put("type", "HIGH_VIRAL_LOAD");
-        alert.put("severity", "MEDIUM");
-        alert.put("message", "Viral load > 1000 copies/mL. Consider treatment adherence assessment and potential regimen change.");
-        insert(alert);
+        ClinicalDecision decision = new ClinicalDecision();
+        decision.setRecommendationType("MONITORING");
+        decision.setRecommendation("Schedule viral load test");
+        decision.setUrgency("MEDIUM");
+        decision.setRationale("WHO recommends viral load monitoring every 6 months");
+        decision.setEvaluationDate(LocalDate.now());
+        decisions.add(decision);
 end
 
-// Rule for missed appointments
-rule "Missed Appointment Alert"
+// Rule for TB Screening
+rule "TB Screening Requirement"
     when
-        $patient: Map()
-        $visits: List() from $patient.get("visits")
-        $lastVisit: Map(
-            $lastDate: get("date")
-        ) from $visits.get(0)
-        eval(getMonthsDifference($lastDate) >= 3)
+        $patient: PatientArtData()
+        $status: ArtStatus() from $patient.statuses
+        not Investigation(type == "TB_SCREENING") from $status.investigations
     then
-        Map<String, Object> alert = new HashMap<>();
-        alert.put("type", "MISSED_APPOINTMENT");
-        alert.put("severity", "HIGH");
-        alert.put("message", "Patient has not visited for 3+ months. Initiate tracking procedure.");
-        insert(alert);
+        ClinicalDecision decision = new ClinicalDecision();
+        decision.setRecommendationType("TB_SCREENING");
+        decision.setRecommendation("Perform TB screening");
+        decision.setUrgency("HIGH");
+        decision.setRationale("WHO recommends TB screening for all PLHIV at each visit");
+        decision.setEvaluationDate(LocalDate.now());
+        decisions.add(decision);
 end
 
-// Rule for regimen change consideration
-rule "First Line Treatment Failure"
+// Rule for Treatment Failure Assessment
+rule "Treatment Failure Assessment"
     when
-        $patient: Map()
-        $visits: List() from $patient.get("visits")
-        $lastVisit: Map() from $visits.get(0)
-        $vlTests: List() from $lastVisit.get("investigations")
-        $vlTest: Map($result: get("result"), get("investigationType") == "VIRAL_LOAD") from $vlTests
-        eval($lastVisit.get("regimenLineName") != null && $lastVisit.get("regimenLineName") == "FIRST_LINE")
-        eval(Double.valueOf($result) > 1000)
-        Number($count: intValue >= 2) from accumulate(
-            $previousVl: Map(
-                $prevResult: get("result")
-            ) from $vlTests,
-            init(int count = 0;),
-            action(if (Double.valueOf($prevResult) > 1000) count++;),
-            result(count)
-        )
+        $patient: PatientArtData()
+        $status: ArtStatus(treatmentFailureReason != null) from $patient.statuses
     then
-        Map<String, Object> alert = new HashMap<>();
-        alert.put("type", "REGIMEN_CHANGE_NEEDED");
-        alert.put("severity", "HIGH");
-        alert.put("message", "Consider second-line treatment. Multiple viral load results > 1000 copies/mL on first-line therapy.");
-        insert(alert);
+        ClinicalDecision decision = new ClinicalDecision();
+        decision.setRecommendationType("TREATMENT_FAILURE");
+        decision.setRecommendation("Conduct resistance testing and consider switch to second-line therapy");
+        decision.setUrgency("HIGH");
+        decision.setRationale("Suspected treatment failure: " + $status.getTreatmentFailureReason());
+        decision.setEvaluationDate(LocalDate.now());
+        decisions.add(decision);
 end
 
-// Rule for CD4 monitoring frequency
-rule "CD4 Monitoring Required"
+// Rule for Adherence Support
+rule "Adherence Support"
     when
-        $patient: Map()
-        $visits: List() from $patient.get("visits")
-        $lastVisit: Map() from $visits.get(0)
-        $investigations: List() from $lastVisit.get("investigations")
-        $cd4Test: Map(
-            $date: get("date")
-        ) from $investigations
-        eval($cd4Test.get("investigationType") == "CD4_COUNT")
-        eval(getMonthsDifference($date) >= 6)
+        $patient: PatientArtData()
+        $status: ArtStatus(state == "CONTINUE") from $patient.statuses
     then
-        Map<String, Object> alert = new HashMap<>();
-        alert.put("type", "CD4_MONITORING");
-        alert.put("severity", "MEDIUM");
-        alert.put("message", "CD4 count monitoring is due (>6 months since last test).");
-        insert(alert);
+        ClinicalDecision decision = new ClinicalDecision();
+        decision.setRecommendationType("ADHERENCE");
+        decision.setRecommendation("Provide adherence counseling and support");
+        decision.setUrgency("MEDIUM");
+        decision.setRationale("Regular adherence support is essential for treatment success");
+        decision.setEvaluationDate(LocalDate.now());
+        decisions.add(decision);
 end
 
-// Rule for pediatric dosage adjustment
-rule "Pediatric Dosage Review"
+// Rule for Opportunistic Infection Prophylaxis
+rule "OI Prophylaxis"
     when
-        $patient: Map()
-        $birthDate: String() from $patient.get("birthDate")
-        eval(getYearsDifference($birthDate) < 15)
-        $visits: List() from $patient.get("visits")
-        $lastVisit: Map(
-            $lastDate: get("date")
-        ) from $visits.get(0)
-        eval(getMonthsDifference($lastDate) >= 6)
+        $patient: PatientArtData()
+        $status: ArtStatus() from $patient.statuses
+        $stage: WhoStage(whoStage == "THREE" || whoStage == "FOUR") from $status.whoStages
     then
-        Map<String, Object> alert = new HashMap<>();
-        alert.put("type", "PEDIATRIC_DOSAGE_REVIEW");
-        alert.put("severity", "MEDIUM");
-        alert.put("message", "Review pediatric dosage due to potential weight/age changes.");
-        insert(alert);
-end
-
-// Rule for Opportunistic Infection screening
-rule "OI Screening Required"
-    when
-        $patient: Map()
-        $visits: List() from $patient.get("visits")
-        $lastVisit: Map() from $visits.get(0)
-        $investigations: List() from $lastVisit.get("investigations")
-        $cd4Test: Map(
-            $result: get("result"),
-            get("investigationType") == "CD4_COUNT"
-        ) from $investigations
-        eval(Double.valueOf($result) < 200)
-    then
-        Map<String, Object> alert = new HashMap<>();
-        alert.put("type", "OI_SCREENING");
-        alert.put("severity", "HIGH");
-        alert.put("message", "Low CD4 count requires opportunistic infection screening and prophylaxis evaluation.");
-        insert(alert);
+        ClinicalDecision decision = new ClinicalDecision();
+        decision.setRecommendationType("OI_PROPHYLAXIS");
+        decision.setRecommendation("Initiate/continue cotrimoxazole prophylaxis");
+        decision.setUrgency("HIGH");
+        decision.setRationale("WHO Stage " + $stage.getWhoStage() + " requires OI prophylaxis");
+        decision.setEvaluationDate(LocalDate.now());
+        decisions.add(decision);
 end

@@ -1,28 +1,21 @@
 package zw.org.mohcc.cdss.service;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.databind.SerializationFeature;
-import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
-import lombok.extern.slf4j.Slf4j;
 import org.kie.api.runtime.KieContainer;
 import org.kie.api.runtime.KieSession;
+import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
-import zw.org.mohcc.cdss.model.dto.ClinicalAlert;
-import zw.org.mohcc.cdss.model.dto.PatientAssessment;
-import zw.org.mohcc.cdss.model.dto.TreatmentAlert;
-import zw.org.mohcc.cdss.model.enums.AlertSeverity;
+import zw.org.mohcc.cdss.model.dto.*;
 import zw.org.mohcc.cdss.repository.*;
 
 import java.time.LocalDate;
-import java.time.ZoneId;
-import java.time.temporal.ChronoUnit;
 import java.util.*;
 
 @Service
-@Slf4j
 public class ClinicalDecisionService {
+
+    private static final Logger logger = LoggerFactory.getLogger(ClinicalDecisionService.class);
     private final KieContainer kieContainer;
     private final ArtRegisterRepository artRegisterRepository;
 
@@ -138,6 +131,110 @@ public class ClinicalDecisionService {
         return Collections.singletonList(root);
     }
 
+    public List<ClinicalDecision> evaluatePatientRules(String personId) {
+        List<Map<String, Object>> patientData = processArtData(personId);
+
+        if (patientData.isEmpty()) {
+            logger.warn("No patient data found for personId: {}", personId);
+            return Collections.emptyList();
+        }
+
+        PatientArtData patient = convertToPatientArtData(patientData.get(0));
+
+        // Get the named session from kmodule.xml
+        try (KieSession kieSession = kieContainer.newKieSession("ksession-rules")) {
+
+            try {
+                List<ClinicalDecision> decisions = new ArrayList<>();
+                kieSession.setGlobal("decisions", decisions);
+                kieSession.insert(patient);
+                kieSession.fireAllRules();
+                return decisions;
+            } finally {
+                kieSession.dispose();
+            }
+        }
+    }
+
+    private PatientArtData convertToPatientArtData(Map<String, Object> data) {
+        PatientArtData patient = new PatientArtData();
+
+        // Set basic patient information
+        patient.setPersonId((String) data.get("personId"));
+        patient.setBirthDate(convertToLocalDate((Date) data.get("birthDate")));
+        patient.setDateOfHivTest(convertToLocalDate((Date) data.get("dateOfHivTest")));
+        patient.setDateEnrolled(convertToLocalDate((Date) data.get("dateEnrolled")));
+        patient.setSex((String) data.get("sex"));
+        patient.setArtNumber((String) data.get("artNumber"));
+        patient.setSiteId((String) data.get("siteId"));
+
+        // Convert statuses
+        List<Map<String, Object>> statusMaps = (List<Map<String, Object>>) data.get("statuses");
+        List<ArtStatus> statuses = new ArrayList<>();
+
+        for (Map<String, Object> statusMap : statusMaps) {
+            ArtStatus status = new ArtStatus();
+            status.setDate(convertToLocalDate((Date) statusMap.get("date")));
+            status.setReason((String) statusMap.get("reason"));
+            status.setArtStatusId((String) statusMap.get("artStatusId"));
+            status.setReasonForRegimenSubstitution((String) statusMap.get("reasonForRegimenSubstitution"));
+            status.setRegimenFrom((String) statusMap.get("regimenFrom"));
+            status.setTreatmentFailureReason((String) statusMap.get("treatmentFailureReason"));
+            status.setAdverseEventStatus((String) statusMap.get("adverseEventStatus"));
+            status.setRegimenLineFromName((String) statusMap.get("regimenLineFromName"));
+            status.setState((String) statusMap.get("state"));
+            status.setRegimenLineName((String) statusMap.get("regimenLineName"));
+            status.setRegimen((String) statusMap.get("regimen"));
+
+            // Convert WHO stages
+            List<Map<String, Object>> whoStageMaps = (List<Map<String, Object>>) statusMap.get("whoStages");
+            List<WhoStage> whoStages = new ArrayList<>();
+
+            for (Map<String, Object> whoStageMap : whoStageMaps) {
+                WhoStage whoStage = new WhoStage();
+                whoStage.setDate(convertToLocalDate((Date) whoStageMap.get("date")));
+                whoStage.setArtStageId((String) whoStageMap.get("artStageId"));
+                whoStage.setWhoStage((String) whoStageMap.get("whoStage"));
+                whoStage.setFollowUpStatus((String) whoStageMap.get("followUpStatus"));
+                whoStages.add(whoStage);
+            }
+            status.setWhoStages(whoStages);
+
+            // Convert investigations
+            List<Map<String, Object>> investigationMaps = (List<Map<String, Object>>) statusMap.get("investigations");
+            List<Investigation> investigations = new ArrayList<>();
+
+            for (Map<String, Object> investigationMap : investigationMaps) {
+                Investigation investigation = new Investigation();
+                investigation.setType((String) investigationMap.get("investigationType"));
+                investigation.setResult((String) investigationMap.get("result"));
+                investigation.setDate(convertToLocalDate((Date) investigationMap.get("date")));
+                investigations.add(investigation);
+            }
+            status.setInvestigations(investigations);
+
+            statuses.add(status);
+        }
+
+        patient.setStatuses(statuses);
+        return patient;
+    }
+
+    // Helper method to convert sql date to LocalDate
+    private LocalDate convertToLocalDate(Date date) {
+        if (date == null) {
+            return null;
+        }
+
+        // Handle java.sql.Date specifically
+        if (date instanceof java.sql.Date) {
+            return ((java.sql.Date) date).toLocalDate();
+        }
+
+        // Handle java.util.Date
+        return new java.sql.Date(date.getTime()).toLocalDate();
+    }
+
     // Helper method to compare dates ignoring time component
     private boolean isSameDay(Date date1, Date date2) {
         if (date1 == null || date2 == null) {
@@ -150,166 +247,6 @@ public class ClinicalDecisionService {
         return cal1.get(Calendar.YEAR) == cal2.get(Calendar.YEAR) &&
                 cal1.get(Calendar.MONTH) == cal2.get(Calendar.MONTH) &&
                 cal1.get(Calendar.DAY_OF_MONTH) == cal2.get(Calendar.DAY_OF_MONTH);
-    }
-
-    public PatientAssessment evaluatePatient(String personId) {
-        // Get the patient data using existing method
-        List<Map<String, Object>> patientData = processArtData(personId);
-        if (patientData.isEmpty()) {
-            throw new RuntimeException("Patient data not found for ID: " + personId);
-        }
-
-        // Create KieSession for rules evaluation
-        KieSession kieSession = kieContainer.newKieSession();
-
-        try {
-            // Insert patient data into session
-            Map<String, Object> patient = patientData.get(0);
-            kieSession.insert(patient);
-
-            // Fire all rules
-            kieSession.fireAllRules();
-
-            // Collect all alerts from the session
-            List<Map<String, Object>> alerts = new ArrayList<>();
-            for (Object obj : kieSession.getObjects()) {
-                if (obj instanceof Map && ((Map) obj).containsKey("type")) {
-                    alerts.add((Map<String, Object>) obj);
-                }
-            }
-
-            // Create patient assessment based on the data and alerts
-            return createPatientAssessment(patient, alerts);
-
-        } finally {
-            kieSession.dispose();
-        }
-    }
-
-    private PatientAssessment createPatientAssessment(Map<String, Object> patient, List<Map<String, Object>> alerts) {
-        PatientAssessment assessment = new PatientAssessment();
-        assessment.setPersonId((String) patient.get("personId"));
-
-        // Process statuses if available
-        List<Map<String, Object>> statuses = (List<Map<String, Object>>) patient.get("statuses");
-        if (statuses != null && !statuses.isEmpty()) {
-            // Sort statuses by date in descending order to get the most recent first
-            statuses.sort((s1, s2) -> ((Date) s2.get("date")).compareTo((Date) s1.get("date")));
-
-            // Get the most recent status
-            Map<String, Object> latestStatus = statuses.get(0);
-
-            // Set current status information
-            assessment.setState((String) latestStatus.get("state"));
-            assessment.setReason((String) latestStatus.get("reason"));
-            assessment.setCurrentArtStatus((String) latestStatus.get("state"));
-
-            // Determine if patient is currently on ART
-            assessment.setOnArt("ACTIVE".equals(latestStatus.get("state")) ||
-                    "CONTINUE".equals(latestStatus.get("state")));
-
-            // Calculate months on ART
-            Date startDate = findInitialStartDate(statuses);
-            if (startDate != null) {
-                LocalDate startLocalDate = startDate.toInstant()
-                        .atZone(ZoneId.systemDefault())
-                        .toLocalDate();
-                assessment.setMonthsOnArt((int) ChronoUnit.MONTHS.between(startLocalDate, LocalDate.now()));
-            }
-
-            // Process the most recent investigations
-            processInvestigations(latestStatus, assessment);
-
-            // Process historical viral loads for trending
-            List<Double> historicalViralLoads = new ArrayList<>();
-            for (Map<String, Object> status : statuses) {
-                List<Map<String, Object>> investigations = (List<Map<String, Object>>) status.get("investigations");
-                if (investigations != null) {
-                    for (Map<String, Object> investigation : investigations) {
-                        if ("VIRAL_LOAD".equals(investigation.get("investigationType"))) {
-                            String result = (String) investigation.get("result");
-                            if (result != null) {
-                                historicalViralLoads.add(Double.valueOf(result));
-                            }
-                        }
-                    }
-                }
-            }
-
-            // Add historical viral loads to assessment if needed
-            assessment.setHistoricalViralLoads(historicalViralLoads);
-        }
-
-        // Process alerts
-        processClinicalAndTreatmentAlerts(assessment, alerts);
-
-        return assessment;
-    }
-
-    private Date findInitialStartDate(List<Map<String, Object>> statuses) {
-        // Find the earliest START_ARV status
-        return statuses.stream()
-                .filter(status -> "START_ARV".equals(status.get("state")))
-                .map(status -> (Date) status.get("date"))
-                .min(Date::compareTo)
-                .orElse(null);
-    }
-
-    private void processInvestigations(Map<String, Object> status, PatientAssessment assessment) {
-        List<Map<String, Object>> investigations = (List<Map<String, Object>>) status.get("investigations");
-        if (investigations != null) {
-            for (Map<String, Object> investigation : investigations) {
-                String type = (String) investigation.get("investigationType");
-                String result = (String) investigation.get("result");
-
-                if (result != null) {
-                    if ("CD4_COUNT".equals(type)) {
-                        assessment.setCd4Count(Double.valueOf(result));
-                    } else if ("VIRAL_LOAD".equals(type)) {
-                        assessment.setLastViralLoad(Double.valueOf(result));
-                        // Calculate months since last viral load
-                        Date vlDate = (Date) investigation.get("date");
-                        if (vlDate != null) {
-                            LocalDate testDate = vlDate.toInstant()
-                                    .atZone(ZoneId.systemDefault())
-                                    .toLocalDate();
-                            assessment.setMonthsSinceLastViralLoad(
-                                    (int) ChronoUnit.MONTHS.between(testDate, LocalDate.now())
-                            );
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    private void processClinicalAndTreatmentAlerts(PatientAssessment assessment, List<Map<String, Object>> alerts) {
-        List<ClinicalAlert> clinicalAlerts = new ArrayList<>();
-        List<TreatmentAlert> treatmentAlerts = new ArrayList<>();
-
-        for (Map<String, Object> alert : alerts) {
-            String type = (String) alert.get("type");
-            String message = (String) alert.get("message");
-            String severity = (String) alert.get("severity");
-
-            if (type.endsWith("_ALERT")) {
-                ClinicalAlert clinicalAlert = new ClinicalAlert();
-                clinicalAlert.setCode(type);
-                clinicalAlert.setMessage(message);
-                clinicalAlert.setAction("Please review and take appropriate action.");
-                clinicalAlerts.add(clinicalAlert);
-            } else {
-                TreatmentAlert treatmentAlert = new TreatmentAlert();
-                treatmentAlert.setAlertCode(type);
-                treatmentAlert.setMessage(message);
-                treatmentAlert.setSeverity(AlertSeverity.valueOf(severity));
-                treatmentAlert.setPatientId(assessment.getPersonId());
-                treatmentAlerts.add(treatmentAlert);
-            }
-        }
-
-        assessment.setClinicalAlerts(clinicalAlerts);
-        assessment.setTreatmentAlerts(treatmentAlerts);
     }
 
 }
